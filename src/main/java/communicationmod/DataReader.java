@@ -3,8 +3,11 @@ package communicationmod;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.BlockingQueue;
 
 public class DataReader implements Runnable{
@@ -21,31 +24,23 @@ public class DataReader implements Runnable{
     }
 
     public void run() {
-        while (!Thread.currentThread().isInterrupted()) {
-            StringBuilder inputBuffer = new StringBuilder();
-            try {
-                while (true) {
-                    int nextChar = this.stream.read();
-                    if (nextChar == -1) {
-                        continue;
-                    } else if (nextChar == 0 || nextChar == '\n') {
-                        break;
-                    }
-                    inputBuffer.append((char) nextChar);
-                }
-                if (inputBuffer.length() > 0) {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(this.stream, StandardCharsets.UTF_8))) {
+            String line;
+            while (!Thread.currentThread().isInterrupted() && (line = reader.readLine()) != null) {
+                line = line.trim();
+                if (line.length() > 0) {
                     if (verbose) {
-                        logger.info("Received message: " + inputBuffer.toString());
+                        logger.info("Received message: " + line);
                     }
-                    queue.put(inputBuffer.toString());
+                    queue.put(line);
                 }
-            } catch(IOException e){
-                logger.error("Message could not be received from child process. Shutting down reading thread.");
-                Thread.currentThread().interrupt();
-            } catch (InterruptedException e) {
-                logger.info("Communications reading thread interrupted.");
-                Thread.currentThread().interrupt();
             }
+        } catch (IOException e) {
+            logger.error("Message could not be received from child process. Shutting down reading thread.");
+            Thread.currentThread().interrupt();
+        } catch (InterruptedException e) {
+            logger.info("Communications reading thread interrupted.");
+            Thread.currentThread().interrupt();
         }
     }
 }

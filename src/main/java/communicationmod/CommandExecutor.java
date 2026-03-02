@@ -78,6 +78,9 @@ public class CommandExecutor {
             case "wait":
                 executeWaitCommand(tokens);
                 return true;
+            case "start_automation":
+                executeStartAutomationCommand(tokens);
+                return false;
 
             default:
                 logger.info("This should never happen.");
@@ -189,6 +192,20 @@ public class CommandExecutor {
         return !isInDungeon() && CardCrawlGame.mainMenuScreen != null;
     }
 
+    private static void executeStartAutomationCommand(String[] tokens) {
+        if (tokens.length < 2) return;
+        String mode = tokens[1];
+        String question = "";
+        if (tokens.length > 2) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 2; i < tokens.length; i++) {
+                sb.append(tokens[i]).append(" ");
+            }
+            question = sb.toString().trim();
+        }
+        SubagentCoordinator.startAutomation(mode, question);
+    }
+
     private static void executeStateCommand() {
         CommunicationMod.mustSendGameState = true;
     }
@@ -219,10 +236,16 @@ public class CommandExecutor {
         }
         AbstractMonster target_monster = null;
         if (monster_index != -1) {
-            if (monster_index < 0 || monster_index >= AbstractDungeon.getCurrRoom().monsters.monsters.size()) {
+            java.util.List<AbstractMonster> aliveMonsters = new java.util.ArrayList<>();
+            for (AbstractMonster m : AbstractDungeon.getCurrRoom().monsters.monsters) {
+                if (!m.isDeadOrEscaped()) {
+                    aliveMonsters.add(m);
+                }
+            }
+            if (monster_index < 0 || monster_index >= aliveMonsters.size()) {
                 throw new InvalidCommandException(tokens, InvalidCommandException.InvalidCommandFormat.OUT_OF_BOUNDS, Integer.toString(monster_index));
             } else {
-                target_monster = AbstractDungeon.getCurrRoom().monsters.monsters.get(monster_index);
+                target_monster = aliveMonsters.get(monster_index);
             }
         }
         if((card_index < 1) || (card_index > AbstractDungeon.player.hand.size()) || !(AbstractDungeon.player.hand.group.get(card_index - 1).canUse(AbstractDungeon.player, target_monster))) {
@@ -298,7 +321,16 @@ public class CommandExecutor {
                 if (monster_index < 0 || monster_index >= AbstractDungeon.getCurrRoom().monsters.monsters.size()) {
                     throw new InvalidCommandException(tokens, InvalidCommandException.InvalidCommandFormat.OUT_OF_BOUNDS, Integer.toString(monster_index));
                 } else {
-                    target_monster = AbstractDungeon.getCurrRoom().monsters.monsters.get(monster_index);
+                    java.util.List<AbstractMonster> aliveMonsters = new java.util.ArrayList<>();
+                    for (AbstractMonster m : AbstractDungeon.getCurrRoom().monsters.monsters) {
+                        if (!m.isDeadOrEscaped()) {
+                            aliveMonsters.add(m);
+                        }
+                    }
+                    if (monster_index >= aliveMonsters.size()) {
+                        throw new InvalidCommandException(tokens, InvalidCommandException.InvalidCommandFormat.OUT_OF_BOUNDS, Integer.toString(monster_index));
+                    }
+                    target_monster = aliveMonsters.get(monster_index);
                 }
                 selectedPotion.use(target_monster);
             } else {

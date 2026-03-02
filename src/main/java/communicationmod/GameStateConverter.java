@@ -4,11 +4,15 @@ import basemod.ReflectionHacks;
 import com.google.gson.Gson;
 import com.megacrit.cardcrawl.actions.GameActionManager;
 import com.megacrit.cardcrawl.cards.AbstractCard;
+import com.megacrit.cardcrawl.cards.CardGroup;
 import com.megacrit.cardcrawl.characters.AbstractPlayer;
 import com.megacrit.cardcrawl.core.AbstractCreature;
+import com.megacrit.cardcrawl.core.CardCrawlGame;
 import com.megacrit.cardcrawl.core.Settings;
 import com.megacrit.cardcrawl.dungeons.AbstractDungeon;
 import com.megacrit.cardcrawl.events.AbstractEvent;
+import com.megacrit.cardcrawl.localization.CardStrings;
+import com.megacrit.cardcrawl.localization.LocalizedStrings;
 import com.megacrit.cardcrawl.map.MapEdge;
 import com.megacrit.cardcrawl.map.MapRoomNode;
 import com.megacrit.cardcrawl.monsters.AbstractMonster;
@@ -38,6 +42,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 
 public class GameStateConverter {
+    private static LocalizedStrings englishStrings;
+    private static boolean englishStringsAttempted = false;
 
     /**
      * Creates a JSON representation of the status of CommunicationMod that will be sent to the external process.
@@ -49,6 +55,11 @@ public class GameStateConverter {
      * @return A string containing the JSON representation of CommunicationMod's status
      */
     public static String getCommunicationState() {
+        Gson gson = new Gson();
+        return gson.toJson(getCommunicationStateMap());
+    }
+
+    public static HashMap<String, Object> getCommunicationStateMap() {
         HashMap<String, Object> response = new HashMap<>();
         response.put("available_commands", CommandExecutor.getAvailableCommands());
         response.put("ready_for_command", GameStateListener.isWaitingForCommand());
@@ -56,9 +67,133 @@ public class GameStateConverter {
         response.put("in_game", isInGame);
         if(isInGame) {
             response.put("game_state", getGameState());
+            response.put("text_summary", getSimplifiedTextState());
         }
-        Gson gson = new Gson();
-        return gson.toJson(response);
+        return response;
+    }
+
+    public static String getSimplifiedTextState() {
+        if (!CommandExecutor.isInDungeon()) {
+            return "当前不在游戏中或处于主菜单。";
+        }
+
+        StringBuilder sb = new StringBuilder();
+        AbstractPlayer p = AbstractDungeon.player;
+        sb.append("【角色信息】\n");
+        sb.append(String.format("角色：%s | 层数：%d | 金钱：%d\n", p.title, AbstractDungeon.floorNum, p.gold));
+        sb.append(String.format("生命值：%d/%d | 能量：%d/%d\n", p.currentHealth, p.maxHealth, EnergyPanel.totalCount, p.energy.energyMaster));
+        
+        if (p.stance != null && !"Neutral".equals(p.stance.ID)) {
+            sb.append("当前姿态：").append(p.stance.name).append(" (").append(removeTextFormatting(p.stance.description)).append(")\n");
+        }
+
+        if (!p.powers.isEmpty()) {
+            sb.append("你的所有状态：");
+            for (AbstractPower pow : p.powers) {
+                sb.append(String.format("[%s: %s(%d)] ", pow.name, removeTextFormatting(pow.description), pow.amount));
+            }
+            sb.append("\n");
+        }
+
+        if (p.maxOrbs > 0) {
+            sb.append("充能球槽位数量：").append(p.maxOrbs).append("\n");
+            int filledCount = 0;
+            for (AbstractOrb orb : p.orbs) {
+                if (!(orb instanceof com.megacrit.cardcrawl.orbs.EmptyOrbSlot)) filledCount++;
+            }
+            sb.append("当前持有充能球数量：").append(filledCount).append("\n");
+            if (filledCount > 0) {
+                sb.append("充能球排列（从右到左，即触发顺序，激发时优先激发最右侧的）：");
+                for (int i = 0; i < p.orbs.size(); i++) {
+                    AbstractOrb orb = p.orbs.get(i);
+                    sb.append(String.format("%d: %s ", i, orb.name));
+                }
+                sb.append("\n");
+            }
+        }
+
+        if (!p.relics.isEmpty()) {
+            sb.append("持有的遗物：");
+            for (AbstractRelic r : p.relics) {
+                sb.append("[").append(r.name).append("]");
+                if (r.counter != -1) sb.append("(计数:").append(r.counter).append(")");
+                sb.append(": ").append(removeTextFormatting(r.description)).append(" | ");
+            }
+            sb.append("\n");
+        }
+
+        sb.append("持有的药水：");
+        for (int i = 0; i < p.potions.size(); i++) {
+            AbstractPotion pot = p.potions.get(i);
+            sb.append(i).append(": ").append(pot.name);
+            if (!(pot instanceof com.megacrit.cardcrawl.potions.PotionSlot)) {
+                sb.append("(").append(removeTextFormatting(pot.description)).append(")");
+            }
+            sb.append(" | ");
+        }
+        sb.append("\n");
+
+        if (AbstractDungeon.isScreenUp) {
+            ChoiceScreenUtils.ChoiceType screenType = ChoiceScreenUtils.getCurrentChoiceType();
+            sb.append("\n【选择界面】").append(screenType.name()).append("\n");
+            if (CommandExecutor.isChooseCommandAvailable()) {
+                ArrayList<String> choices = ChoiceScreenUtils.getCurrentChoiceList();
+                sb.append("可用选项：\n");
+                for (int i = 0; i < choices.size(); i++) {
+                    sb.append(String.format("  [%d] %s\n", i, choices.get(i)));
+                }
+            }
+            if (screenType == ChoiceScreenUtils.ChoiceType.GRID) {
+                sb.append("提示：使用 'choose [索引]' 选择一张卡牌\n");
+            }
+        }
+
+        if (AbstractDungeon.getCurrRoom().phase == AbstractRoom.RoomPhase.COMBAT) {
+            sb.append("\n【战斗状态 - 第 ").append(GameActionManager.turn).append(" 回合】\n");
+            
+            sb.append("敌人信息：\n");
+            int mIdx = 0;
+            for (AbstractMonster m : AbstractDungeon.getCurrRoom().monsters.monsters) {
+                if (!m.isDeadOrEscaped()) {
+                    sb.append(String.format("  敌人[%d] %s: HP %d/%d | 格挡 %d | 意图：%s\n", 
+                        mIdx, m.name, m.currentHealth, m.maxHealth, m.currentBlock, getMonsterIntentDescription(m)));
+                    if (!m.powers.isEmpty()) {
+                        sb.append("    状态：");
+                        for (AbstractPower pow : m.powers) {
+                            sb.append(String.format("[%s: %s(%d)] ", pow.name, removeTextFormatting(pow.description), pow.amount));
+                        }
+                        sb.append("\n");
+                    }
+                    mIdx++;
+                }
+            }
+
+            sb.append("当前手牌 (共 ").append(p.hand.size()).append(" 张)：\n");
+            int cIdx = 1;
+            for (AbstractCard c : p.hand.group) {
+                String desc = removeTextFormatting(getProcessedDescription(c, c.rawDescription));
+                sb.append(String.format("  %d, %s [%d费]: %s %s\n", 
+                    cIdx, c.name, c.costForTurn, desc, c.canUse(p, null) ? "" : "(当前不可用)"));
+                cIdx++;
+            }
+
+            sb.append("抽牌堆 (共 ").append(p.drawPile.size()).append(" 张)：");
+            for (AbstractCard c : p.drawPile.group) sb.append(c.name).append("(").append(c.costForTurn).append("费), ");
+            sb.append("\n弃牌堆 (共 ").append(p.discardPile.size()).append(" 张)：");
+            for (AbstractCard c : p.discardPile.group) sb.append(c.name).append("(").append(c.costForTurn).append("费), ");
+            sb.append("\n消耗堆 (共 ").append(p.exhaustPile.size()).append(" 张)：");
+            for (AbstractCard c : p.exhaustPile.group) sb.append(c.name).append("(").append(c.costForTurn).append("费), ");
+            sb.append("\n");
+        } else {
+            sb.append("\n【当前场景】").append(AbstractDungeon.getCurrRoom().getClass().getSimpleName()).append("\n");
+            ChoiceScreenUtils.ChoiceType screenType = ChoiceScreenUtils.getCurrentChoiceType();
+            sb.append("屏幕状态：").append(screenType.name()).append("\n");
+            if (CommandExecutor.isChooseCommandAvailable()) {
+                sb.append("当前可用选项：").append(ChoiceScreenUtils.getCurrentChoiceList()).append("\n");
+            }
+        }
+
+        return sb.toString();
     }
 
 
@@ -179,6 +314,24 @@ public class GameStateConverter {
     private static String removeTextFormatting(String text) {
         text = text.replaceAll("~|@(\\S+)~|@", "$1");
         return text.replaceAll("#.|NL", "");
+    }
+
+    private static String getProcessedDescription(AbstractCard card, String description) {
+        if (description == null) return "";
+        description = description.replace("NL", "");
+        if (card != null) {
+            description = description.replace("!B!", String.valueOf(card.block));
+            description = description.replace("!M!", String.valueOf(card.magicNumber));
+            description = description.replace("!D!", String.valueOf(card.damage));
+        }
+        description = description.replace("[E]", "能量");
+        description = description.replace("[W]", "能量");
+        description = description.replace("[R]", "能量");
+        description = description.replace("[B]", "能量");
+        description = description.replace("[P]", "能量");
+        description = description.replace("[G]", "能量");
+        description = description.replace(" ", "");
+        return description;
     }
 
     /**
@@ -390,6 +543,7 @@ public class GameStateConverter {
         ArrayList<Object> gridSelectedJson = new ArrayList<>();
         ArrayList<AbstractCard> gridCards = ChoiceScreenUtils.getGridScreenCards();
         GridCardSelectScreen screen = AbstractDungeon.gridSelectScreen;
+        CardGroup targetGroup = (CardGroup) ReflectionHacks.getPrivate(screen, GridCardSelectScreen.class, "targetGroup");
         for(AbstractCard card : gridCards) {
             gridJson.add(convertCardToJson(card));
         }
@@ -408,6 +562,9 @@ public class GameStateConverter {
         state.put("for_transform", forTransform);
         state.put("for_purge", forPurge);
         state.put("confirm_up", screen.confirmScreenUp || screen.isJustForConfirming);
+        if (targetGroup != null && targetGroup.type != null) {
+            state.put("source_group", targetGroup.type.name());
+        }
         return state;
     }
 
@@ -437,6 +594,7 @@ public class GameStateConverter {
         state.put("selected", selectedJson);
         state.put("max_cards", AbstractDungeon.handCardSelectScreen.numCardsToSelect);
         state.put("can_pick_zero", AbstractDungeon.handCardSelectScreen.canPickZero);
+        state.put("source_group", "HAND");
         return state;
     }
 
@@ -515,7 +673,9 @@ public class GameStateConverter {
         HashMap<String, Object> state = new HashMap<>();
         ArrayList<Object> monsters = new ArrayList<>();
         for(AbstractMonster monster : AbstractDungeon.getCurrRoom().monsters.monsters) {
-            monsters.add(convertMonsterToJson(monster));
+            if (!monster.isDeadOrEscaped()) {
+                monsters.add(convertMonsterToJson(monster));
+            }
         }
         state.put("monsters", monsters);
         ArrayList<Object> draw_pile = new ArrayList<>();
@@ -631,6 +791,28 @@ public class GameStateConverter {
     private static HashMap<String, Object> convertCardToJson(AbstractCard card) {
         HashMap<String, Object> jsonCard = new HashMap<>();
         jsonCard.put("name", card.name);
+
+        jsonCard.put("damage", card.damage);
+        jsonCard.put("block", card.block);
+        jsonCard.put("magic_number", card.magicNumber);
+
+        String rawDescription = card.rawDescription == null ? "" : card.rawDescription;
+        String localizedDescription = getProcessedDescription(card, rawDescription);
+        jsonCard.put("description", removeTextFormatting(localizedDescription));
+
+        CardStrings englishCard = getEnglishCardStrings(card.cardID);
+        if (englishCard != null) {
+            jsonCard.put("name_en", englishCard.NAME);
+            String englishDescription = englishCard.DESCRIPTION;
+            if (card.upgraded && englishCard.UPGRADE_DESCRIPTION != null && !englishCard.UPGRADE_DESCRIPTION.isEmpty()) {
+                englishDescription = englishCard.UPGRADE_DESCRIPTION;
+            }
+            if (englishDescription != null) {
+                jsonCard.put("description_en", removeTextFormatting(getProcessedDescription(card, englishDescription)));
+            } else {
+                jsonCard.put("description_en", "");
+            }
+        }
         jsonCard.put("uuid", card.uuid.toString());
         if(card.misc != 0) {
             jsonCard.put("misc", card.misc);
@@ -647,6 +829,29 @@ public class GameStateConverter {
         jsonCard.put("exhausts", card.exhaust);
         jsonCard.put("ethereal", card.isEthereal);
         return jsonCard;
+    }
+
+    private static CardStrings getEnglishCardStrings(String cardId) {
+        if (cardId == null || cardId.isEmpty()) {
+            return null;
+        }
+        if (Settings.language == Settings.GameLanguage.ENG) {
+            return CardCrawlGame.languagePack.getCardStrings(cardId);
+        }
+        if (!englishStringsAttempted) {
+            englishStringsAttempted = true;
+            try {
+                englishStrings = (LocalizedStrings) LocalizedStrings.class
+                        .getDeclaredConstructor(Settings.GameLanguage.class)
+                        .newInstance(Settings.GameLanguage.ENG);
+            } catch (Exception e) {
+                englishStrings = null;
+            }
+        }
+        if (englishStrings != null) {
+            return englishStrings.getCardStrings(cardId);
+        }
+        return null;
     }
 
     /**
@@ -679,8 +884,10 @@ public class GameStateConverter {
         jsonMonster.put("max_hp", monster.maxHealth);
         if (AbstractDungeon.player.hasRelic(RunicDome.ID)) {
             jsonMonster.put("intent", AbstractMonster.Intent.NONE);
+            jsonMonster.put("intent_description", "未知(符文圆顶)");
         } else {
             jsonMonster.put("intent", monster.intent.name());
+            jsonMonster.put("intent_description", getMonsterIntentDescription(monster));
             EnemyMoveInfo moveInfo = (EnemyMoveInfo)ReflectionHacks.getPrivate(monster, AbstractMonster.class, "move");
             if (moveInfo != null) {
                 jsonMonster.put("move_id", moveInfo.nextMove);
@@ -712,6 +919,26 @@ public class GameStateConverter {
         return jsonMonster;
     }
 
+    private static String getMonsterIntentDescription(AbstractMonster monster) {
+        String intent = monster.intent.name();
+        ArrayList<String> desc = new ArrayList<>();
+        if (intent.contains("ATTACK")) {
+            int dmg = (int) ReflectionHacks.getPrivate(monster, AbstractMonster.class, "intentDmg");
+            EnemyMoveInfo moveInfo = (EnemyMoveInfo) ReflectionHacks.getPrivate(monster, AbstractMonster.class, "move");
+            int hits = moveInfo != null ? (moveInfo.isMultiDamage ? (moveInfo.multiplier > 0 ? moveInfo.multiplier : 1) : 1) : 1;
+            desc.add("造成 " + dmg + (hits > 1 ? "x" + hits : "") + " 伤害");
+        }
+        if (intent.contains("DEFEND")) desc.add("获得格挡");
+        if (intent.contains("BUFF") || intent.contains("STRONG_DEBUFF")) desc.add("获得强化/强力负面效果");
+        else if (intent.contains("DEBUFF")) desc.add("施加负面效果");
+        if (intent.contains("STUN")) desc.add("昏迷中");
+        if (intent.contains("ESCAPE")) desc.add("逃跑");
+        if (intent.contains("MAGIC")) desc.add("使用魔法");
+        if (intent.contains("UNKNOWN")) desc.add("未知行动");
+        if (desc.isEmpty()) return intent;
+        return String.join(", ", desc);
+    }
+
     /**
      * Creates a GSON-compatible representation of the given player
      * The player object contains:
@@ -725,6 +952,30 @@ public class GameStateConverter {
      * @param player The player to convert
      * @return A player object
      */
+    private static ArrayList<Object> convertPlayerOrbsToJson(AbstractPlayer player) {
+        ArrayList<Object> orbs = new ArrayList<>();
+        int index = 0;
+        for(AbstractOrb orb : player.orbs) {
+            HashMap<String, Object> jsonOrb = new HashMap<>();
+            jsonOrb.put("name", orb.name);
+            jsonOrb.put("id", orb.ID);
+            jsonOrb.put("evoke_amount", orb.evokeAmount);
+            jsonOrb.put("passive_amount", orb.passiveAmount);
+            jsonOrb.put("description", removeTextFormatting(orb.description));
+            
+            jsonOrb.put("index", index);
+            if (index == 0 && orb.ID != null && !orb.ID.equals("Empty")) {
+                jsonOrb.put("next_to_evoke", true);
+            }
+            
+            jsonOrb.put("cX", orb.cX);
+            
+            orbs.add(jsonOrb);
+            index++;
+        }
+        return orbs;
+    }
+
     private static HashMap<String, Object> convertPlayerToJson(AbstractPlayer player) {
         HashMap<String, Object> jsonPlayer = new HashMap<>();
         jsonPlayer.put("max_hp", player.maxHealth);
@@ -732,11 +983,9 @@ public class GameStateConverter {
         jsonPlayer.put("powers", convertCreaturePowersToJson(player));
         jsonPlayer.put("energy", EnergyPanel.totalCount);
         jsonPlayer.put("block", player.currentBlock);
-        ArrayList<Object> orbs = new ArrayList<>();
-        for(AbstractOrb orb : player.orbs) {
-            orbs.add(convertOrbToJson(orb));
-        }
-        jsonPlayer.put("orbs", orbs);
+        jsonPlayer.put("stance", player.stance.ID);
+        jsonPlayer.put("orbs", convertPlayerOrbsToJson(player));
+        jsonPlayer.put("max_orbs", player.maxOrbs);
         return jsonPlayer;
     }
 
@@ -782,6 +1031,7 @@ public class GameStateConverter {
             json_power.put("id", power.ID);
             json_power.put("name", power.name);
             json_power.put("amount", power.amount);
+            json_power.put("description", removeTextFormatting(power.description));
             Object damage = getFieldIfExists(power, "damage");
             if (damage != null) {
                 json_power.put("damage", (int)damage);
@@ -840,6 +1090,7 @@ public class GameStateConverter {
         jsonRelic.put("id", relic.relicId);
         jsonRelic.put("name", relic.name);
         jsonRelic.put("counter", relic.counter);
+        jsonRelic.put("description", removeTextFormatting(relic.description));
         return jsonRelic;
     }
 
@@ -858,6 +1109,7 @@ public class GameStateConverter {
         HashMap<String, Object> jsonPotion = new HashMap<>();
         jsonPotion.put("id", potion.ID);
         jsonPotion.put("name", potion.name);
+        jsonPotion.put("description", removeTextFormatting(potion.description));
         boolean canUse = potion.canUse();
         boolean canDiscard = potion.canDiscard();
         if (potion instanceof PotionSlot) {

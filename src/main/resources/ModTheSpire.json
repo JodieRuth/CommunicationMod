@@ -3,6 +3,7 @@
   "name": "${project.name}",
   "author_list": ["Forgotten Arbiter"],
   "description": "${project.description}",
+  "mod_initializer": "communicationmod.CommunicationMod",
   "version": "${project.version}",
   "sts_version": "${SlayTheSpire.version}",
   "mts_version": "${ModTheSpire.version}",
